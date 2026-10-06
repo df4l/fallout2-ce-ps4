@@ -1,0 +1,15 @@
+# Build outputs
+/obj/
+/eboot.bin
+/pkg.gp4
+/*.pkg
+/sce_sys/
+/sce_module/
+
+# Game data (copyrighted, never commit)
+/gamedata/
+*.dat
+*.DAT
+
+# Downloaded toolchain release and OpenSSL 1.1
+/deps/

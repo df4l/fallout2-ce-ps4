@@ -1,0 +1,14 @@
+[submodule "external/fallout2-ce"]
+	path = external/fallout2-ce
+	url = https://github.com/alexbatalov/fallout2-ce
+	ignore = dirty
+[submodule "external/PS4Toolchain"]
+	path = external/PS4Toolchain
+	url = https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain
+	ignore = dirty
+[submodule "external/zlib"]
+	path = external/zlib
+	url = https://github.com/madler/zlib
+[submodule "external/fpattern"]
+	path = external/fpattern
+	url = https://github.com/alexbatalov/fpattern

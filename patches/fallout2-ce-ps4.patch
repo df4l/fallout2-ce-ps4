@@ -1,0 +1,1048 @@
+diff --git a/src/audio_engine.cc b/src/audio_engine.cc
+index 6523c5c..8026e0d 100644
+--- a/src/audio_engine.cc
++++ b/src/audio_engine.cc
+@@ -6,6 +6,10 @@
+ 
+ #include <SDL.h>
+ 
++#ifdef __PS4__
++#include "ps4_platform.h"
++#endif
++
+ namespace fallout {
+ 
+ #define AUDIO_ENGINE_SOUND_BUFFERS 8
+@@ -48,6 +52,14 @@ static void audioEngineMixin(void* userData, Uint8* stream, int length)
+ {
+     memset(stream, gAudioEngineSpec.silence, length);
+ 
++#ifdef __PS4__
++    static bool loggedFirstMix = false;
++    if (!loggedFirstMix) {
++        loggedFirstMix = true;
++        ps4_log("audio: first mixin callback, length=%d", length);
++    }
++#endif
++
+     if (!gProgramIsActive) {
+         return;
+     }
+@@ -56,7 +68,7 @@ static void audioEngineMixin(void* userData, Uint8* stream, int length)
+         AudioEngineSoundBuffer* soundBuffer = &(gAudioEngineSoundBuffers[index]);
+         std::lock_guard<std::recursive_mutex> lock(soundBuffer->mutex);
+ 
+-        if (soundBuffer->active && soundBuffer->playing) {
++        if (soundBuffer->active && soundBuffer->playing && soundBuffer->stream != nullptr) {
+             int srcFrameSize = soundBuffer->bitsPerSample / 8 * soundBuffer->channels;
+ 
+             unsigned char buffer[1024];
+@@ -103,6 +115,11 @@ bool audioEngineInit()
+     desiredSpec.callback = audioEngineMixin;
+ 
+     gAudioEngineDeviceId = SDL_OpenAudioDevice(nullptr, 0, &desiredSpec, &gAudioEngineSpec, SDL_AUDIO_ALLOW_ANY_CHANGE);
++#ifdef __PS4__
++    ps4_log("audio: SDL_OpenAudioDevice -> %d (%s) freq=%d fmt=0x%x ch=%d samples=%d",
++        (int)gAudioEngineDeviceId, SDL_GetError(), gAudioEngineSpec.freq, (int)gAudioEngineSpec.format,
++        (int)gAudioEngineSpec.channels, (int)gAudioEngineSpec.samples);
++#endif
+     if (gAudioEngineDeviceId == -1) {
+         return false;
+     }
+@@ -156,6 +173,12 @@ int audioEngineCreateSoundBuffer(unsigned int size, int bitsPerSample, int chann
+             soundBuffer->pos = 0;
+             soundBuffer->data = malloc(size);
+             soundBuffer->stream = SDL_NewAudioStream(bitsPerSample == 16 ? AUDIO_S16 : AUDIO_S8, channels, rate, gAudioEngineSpec.format, gAudioEngineSpec.channels, gAudioEngineSpec.freq);
++#ifdef __PS4__
++            ps4_log("audio: buffer %d size=%u bits=%d ch=%d rate=%d stream=%p", index, size, bitsPerSample, channels, rate, (void*)soundBuffer->stream);
++            if (soundBuffer->stream == nullptr) {
++                ps4_log("audio: SDL_NewAudioStream failed: %s", SDL_GetError());
++            }
++#endif
+             return index;
+         }
+     }
+diff --git a/src/character_editor.cc b/src/character_editor.cc
+index 0d989a7..c66d528 100644
+--- a/src/character_editor.cc
++++ b/src/character_editor.cc
+@@ -1933,7 +1933,7 @@ static int _get_input_str(int win, int cancelKeyCode, char* text, int maxLength,
+ 
+     windowRefresh(win);
+ 
+-    beginTextInput();
++    beginTextInput(text);
+ 
+     int blinkingCounter = 3;
+     bool blink = false;
+diff --git a/src/dbox.cc b/src/dbox.cc
+index fc96ae0..6dae6fd 100644
+--- a/src/dbox.cc
++++ b/src/dbox.cc
+@@ -1115,7 +1115,7 @@ int showSaveFileDialog(char* title, char** fileList, char* dest, int fileListLen
+ 
+     windowRefresh(win);
+ 
+-    beginTextInput();
++    beginTextInput(dest);
+ 
+     int blinkingCounter = 3;
+     bool blink = false;
+diff --git a/src/debug.cc b/src/debug.cc
+index a268853..1d27e06 100644
+--- a/src/debug.cc
++++ b/src/debug.cc
+@@ -11,6 +11,10 @@
+ #include "platform_compat.h"
+ #include "window_manager_private.h"
+ 
++#ifdef __PS4__
++#include "ps4_platform.h"
++#endif
++
+ namespace fallout {
+ 
+ static int _debug_puts(char* string);
+@@ -132,6 +136,17 @@ int debugPrint(const char* format, ...)
+ 
+     int rc;
+ 
++#ifdef __PS4__
++    {
++        char line[260];
++        va_list copy;
++        va_copy(copy, args);
++        vsnprintf(line, sizeof(line), format, copy);
++        va_end(copy);
++        ps4_log("dbg: %s", line);
++    }
++#endif
++
+     if (gDebugPrintProc != nullptr) {
+         char string[260];
+         vsnprintf(string, sizeof(string), format, args);
+diff --git a/src/delay.cc b/src/delay.cc
+index dd9fa68..de4d0a3 100644
+--- a/src/delay.cc
++++ b/src/delay.cc
+@@ -2,10 +2,19 @@
+ 
+ #include <SDL.h>
+ 
++#ifdef __PS4__
++#include <unistd.h>
++#endif
++
+ void delay_ms(int ms)
+ {
+     if (ms <= 0) {
+         return;
+     }
++#ifdef __PS4__
++    // SDL_Delay does not return reliably on Orbis; use the libc sleep.
++    usleep((useconds_t)ms * 1000);
++#else
+     SDL_Delay(ms);
++#endif
+ }
+diff --git a/src/dinput.cc b/src/dinput.cc
+index 171d529..3973c30 100644
+--- a/src/dinput.cc
++++ b/src/dinput.cc
+@@ -1,5 +1,9 @@
+ #include "dinput.h"
+ 
++#ifdef __PS4__
++#include "ps4_platform.h"
++#endif
++
+ namespace fallout {
+ 
+ static int gMouseWheelDeltaX = 0;
+@@ -53,6 +57,16 @@ bool mouseDeviceGetData(MouseData* mouseState)
+     // update mouse position manually.
+     SDL_PumpEvents();
+ 
++#ifdef __PS4__
++    int left, right;
++    ps4_pad_get_mouse(&(mouseState->x), &(mouseState->y), &left, &right);
++    mouseState->buttons[0] = left != 0;
++    mouseState->buttons[1] = right != 0;
++    mouseState->wheelX = 0;
++    mouseState->wheelY = 0;
++    return true;
++#endif
++
+     Uint32 buttons = SDL_GetRelativeMouseState(&(mouseState->x), &(mouseState->y));
+     mouseState->buttons[0] = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
+     mouseState->buttons[1] = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
+@@ -93,7 +107,12 @@ bool keyboardDeviceGetData(KeyboardData* keyboardData)
+ // 0x4E070C
+ bool mouseDeviceInit()
+ {
++#ifdef __PS4__
++    // No mouse on PS4: the cursor is driven by the gamepad.
++    return true;
++#else
+     return SDL_SetRelativeMouseMode(SDL_TRUE) == 0;
++#endif
+ }
+ 
+ // 0x4E078C
+diff --git a/src/file_find.cc b/src/file_find.cc
+index 8671df3..6250d2c 100644
+--- a/src/file_find.cc
++++ b/src/file_find.cc
+@@ -4,6 +4,9 @@
+ #include <string.h>
+ 
+ #include <fpattern/fpattern.h>
++#ifdef __PS4__
++#include "ps4_platform.h"
++#endif
+ 
+ namespace fallout {
+ 
+@@ -32,7 +35,13 @@ bool fileFindFirst(const char* path, DirectoryFileFindData* findData)
+     compat_makepath(basePath, drive, dir, nullptr, nullptr);
+     compat_resolve_path(basePath);
+ 
++#ifdef __PS4__
++    char absBasePath[COMPAT_MAX_PATH + 32];
++    ps4_abs_path(basePath, absBasePath, sizeof(absBasePath));
++    findData->dir = opendir(absBasePath);
++#else
+     findData->dir = opendir(basePath);
++#endif
+     if (findData->dir == nullptr) {
+         return false;
+     }
+diff --git a/src/file_utils.cc b/src/file_utils.cc
+index 182d4c9..80be4ba 100644
+--- a/src/file_utils.cc
++++ b/src/file_utils.cc
+@@ -11,6 +11,13 @@
+ 
+ #include "platform_compat.h"
+ 
++#ifdef __PS4__
++#include "ps4_platform.h"
++#define PS4_COPY_FAIL(src, dst) ps4_log("copy failed: %s -> %s", src, dst)
++#else
++#define PS4_COPY_FAIL(src, dst)
++#endif
++
+ namespace fallout {
+ 
+ static void fileCopy(const char* existingFilePath, const char* newFilePath);
+@@ -20,6 +27,7 @@ int fileCopyDecompressed(const char* existingFilePath, const char* newFilePath)
+ {
+     FILE* stream = compat_fopen(existingFilePath, "rb");
+     if (stream == nullptr) {
++        PS4_COPY_FAIL(existingFilePath, newFilePath);
+         return -1;
+     }
+ 
+@@ -53,6 +61,7 @@ int fileCopyDecompressed(const char* existingFilePath, const char* newFilePath)
+                 fclose(outStream);
+             }
+ 
++            PS4_COPY_FAIL(existingFilePath, newFilePath);
+             return -1;
+         }
+     } else {
+@@ -67,6 +76,7 @@ int fileCopyCompressed(const char* existingFilePath, const char* newFilePath)
+ {
+     FILE* inStream = compat_fopen(existingFilePath, "rb");
+     if (inStream == nullptr) {
++        PS4_COPY_FAIL(existingFilePath, newFilePath);
+         return -1;
+     }
+ 
+@@ -84,7 +94,8 @@ int fileCopyCompressed(const char* existingFilePath, const char* newFilePath)
+         gzFile outStream = compat_gzopen(newFilePath, "wb");
+         if (outStream == nullptr) {
+             fclose(inStream);
+-            return -1;
++            PS4_COPY_FAIL(existingFilePath, newFilePath);
++        return -1;
+         }
+ 
+         // Copy byte-by-byte.
+@@ -109,6 +120,7 @@ int _gzdecompress_file(const char* existingFilePath, const char* newFilePath)
+ {
+     FILE* stream = compat_fopen(existingFilePath, "rb");
+     if (stream == nullptr) {
++        PS4_COPY_FAIL(existingFilePath, newFilePath);
+         return -1;
+     }
+ 
+@@ -121,13 +133,15 @@ int _gzdecompress_file(const char* existingFilePath, const char* newFilePath)
+     if (magic[0] != 0x1F || magic[1] != 0x8B) {
+         gzFile gzstream = compat_gzopen(existingFilePath, "rb");
+         if (gzstream == nullptr) {
+-            return -1;
++            PS4_COPY_FAIL(existingFilePath, newFilePath);
++        return -1;
+         }
+ 
+         stream = compat_fopen(newFilePath, "wb");
+         if (stream == nullptr) {
+             gzclose(gzstream);
+-            return -1;
++            PS4_COPY_FAIL(existingFilePath, newFilePath);
++        return -1;
+         }
+ 
+         while (1) {
+diff --git a/src/fps_limiter.cc b/src/fps_limiter.cc
+index 7b62137..0a2f569 100644
+--- a/src/fps_limiter.cc
++++ b/src/fps_limiter.cc
+@@ -2,6 +2,12 @@
+ 
+ #include <SDL.h>
+ 
++#ifdef __PS4__
++#include "ps4_platform.h"
++// SDL_GetTicks is frozen on Orbis; use the kernel clock.
++#define SDL_GetTicks ps4_ticks_ms
++#endif
++
+ namespace fallout {
+ 
+ FpsLimiter::FpsLimiter(unsigned int fps)
+diff --git a/src/game.cc b/src/game.cc
+index 978a385..efdf84f 100644
+--- a/src/game.cc
++++ b/src/game.cc
+@@ -68,6 +68,13 @@
+ #include "window_manager_private.h"
+ #include "worldmap.h"
+ 
++#ifdef __PS4__
++#include "ps4_platform.h"
++#define PS4_TRACE(name) ps4_log("init: " name)
++#else
++#define PS4_TRACE(name)
++#endif
++
+ namespace fallout {
+ 
+ #define HELP_SCREEN_WIDTH (640)
+@@ -124,18 +131,22 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+ {
+     char path[COMPAT_MAX_PATH];
+ 
++    PS4_TRACE("gameMemoryInit");
+     if (gameMemoryInit() == -1) {
+         return -1;
+     }
+ 
+     // Sfall config should be initialized before game config, since it can
+     // override it's file name.
++    PS4_TRACE("sfallConfigInit");
+     sfallConfigInit(argc, argv);
+ 
++    PS4_TRACE("settingsInit");
+     settingsInit(isMapper, argc, argv);
+ 
+     gIsMapper = isMapper;
+ 
++    PS4_TRACE("gameDbInit");
+     if (gameDbInit() == -1) {
+         settingsExit(false);
+         sfallConfigExit();
+@@ -144,10 +155,13 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+ 
+     // Message list repository is considered a specialized file manager, so
+     // it should be initialized early in the process.
++    PS4_TRACE("messageListRepositoryInit");
+     messageListRepositoryInit();
+ 
+     programWindowSetTitle(windowTitle);
++    PS4_TRACE("_initWindow");
+     _initWindow(1, a4);
++    PS4_TRACE("paletteInit");
+     paletteInit();
+ 
+     const char* language = settings.system.language.c_str();
+@@ -183,6 +197,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+         _debug_register_func(_win_debug);
+     }
+ 
++    PS4_TRACE("interfaceFontsInit");
+     interfaceFontsInit();
+     fontManagerAdd(&gModernFontManager);
+     fontSetCurrent(font);
+@@ -191,33 +206,47 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+ 
+     tileDisable();
+ 
++    PS4_TRACE("randomInit");
+     randomInit();
++    PS4_TRACE("badwordsInit");
+     badwordsInit();
++    PS4_TRACE("skillsInit");
+     skillsInit();
++    PS4_TRACE("statsInit");
+     statsInit();
+ 
++    PS4_TRACE("partyMembersInit");
+     if (partyMembersInit() != 0) {
+         debugPrint("Failed on partyMember_init\n");
+         return -1;
+     }
+ 
++    PS4_TRACE("perksInit");
+     perksInit();
++    PS4_TRACE("traitsInit");
+     traitsInit();
++    PS4_TRACE("itemsInit");
+     itemsInit();
++    PS4_TRACE("queueInit");
+     queueInit();
++    PS4_TRACE("critterInit");
+     critterInit();
++    PS4_TRACE("aiInit");
+     aiInit();
+     _inven_reset_dude();
+ 
++    PS4_TRACE("gameSoundInit");
+     if (gameSoundInit() != 0) {
+         debugPrint("Sound initialization failed.\n");
+     }
+ 
+     debugPrint(">gsound_init\t");
+ 
++    PS4_TRACE("movieInit");
+     movieInit();
+     debugPrint(">initMovie\t\t");
+ 
++    PS4_TRACE("gameMoviesInit");
+     if (gameMoviesInit() != 0) {
+         debugPrint("Failed on gmovie_init\n");
+         return -1;
+@@ -225,6 +254,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+ 
+     debugPrint(">gmovie_init\t");
+ 
++    PS4_TRACE("movieEffectsInit");
+     if (movieEffectsInit() != 0) {
+         debugPrint("Failed on moviefx_init\n");
+         return -1;
+@@ -232,6 +262,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+ 
+     debugPrint(">moviefx_init\t");
+ 
++    PS4_TRACE("isoInit");
+     if (isoInit() != 0) {
+         debugPrint("Failed on iso_init\n");
+         return -1;
+@@ -239,6 +270,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+ 
+     debugPrint(">iso_init\t");
+ 
++    PS4_TRACE("gameMouseInit");
+     if (gameMouseInit() != 0) {
+         debugPrint("Failed on gmouse_init\n");
+         return -1;
+@@ -246,6 +278,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+ 
+     debugPrint(">gmouse_init\t");
+ 
++    PS4_TRACE("protoInit");
+     if (protoInit() != 0) {
+         debugPrint("Failed on proto_init\n");
+         return -1;
+@@ -253,9 +286,11 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+ 
+     debugPrint(">proto_init\t");
+ 
++    PS4_TRACE("animationInit");
+     animationInit();
+     debugPrint(">anim_init\t");
+ 
++    PS4_TRACE("scriptsInit");
+     if (scriptsInit() != 0) {
+         debugPrint("Failed on scr_init\n");
+         return -1;
+@@ -284,16 +319,21 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+ 
+     debugPrint(">wmWorldMap_init\t");
+ 
++    PS4_TRACE("characterEditorInit");
+     characterEditorInit();
+     debugPrint(">CharEditInit\t");
+ 
++    PS4_TRACE("pipboyInit");
+     pipboyInit();
+     debugPrint(">pip_init\t\t");
+ 
++    PS4_TRACE("_InitLoadSave");
+     _InitLoadSave();
++    PS4_TRACE("lsgInit");
+     lsgInit();
+     debugPrint(">InitLoadSave\t");
+ 
++    PS4_TRACE("gameDialogInit");
+     if (gameDialogInit() != 0) {
+         debugPrint("Failed on gdialog_init\n");
+         return -1;
+@@ -301,6 +341,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+ 
+     debugPrint(">gdialog_init\t");
+ 
++    PS4_TRACE("combatInit");
+     if (combatInit() != 0) {
+         debugPrint("Failed on combat_init\n");
+         return -1;
+@@ -308,6 +349,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+ 
+     debugPrint(">combat_init\t");
+ 
++    PS4_TRACE("automapInit");
+     if (automapInit() != 0) {
+         debugPrint("Failed on automap_init\n");
+         return -1;
+@@ -345,6 +387,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+ 
+     debugPrint(">init_options_menu\n");
+ 
++    PS4_TRACE("endgameDeathEndingInit");
+     if (endgameDeathEndingInit() != 0) {
+         debugPrint("Failed on endgameDeathEndingInit");
+         return -1;
+@@ -353,6 +396,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+     debugPrint(">endgameDeathEndingInit\n");
+ 
+     // SFALL
++    PS4_TRACE("premadeCharactersInit");
+     premadeCharactersInit();
+ 
+     if (!sfall_gl_vars_init()) {
+diff --git a/src/input.cc b/src/input.cc
+index 33acd6e..9805505 100644
+--- a/src/input.cc
++++ b/src/input.cc
+@@ -15,6 +15,12 @@
+ #include "touch.h"
+ #include "win32.h"
+ 
++#ifdef __PS4__
++#include "ps4_platform.h"
++// SDL_GetTicks is frozen on Orbis; use the kernel clock.
++#define SDL_GetTicks ps4_ticks_ms
++#endif
++
+ namespace fallout {
+ 
+ typedef struct InputEvent {
+@@ -961,6 +967,20 @@ void _GNW95_process_message()
+ 
+     touch_process_gesture();
+ 
++#ifdef __PS4__
++    // Gamepad buttons are translated into keyboard events.
++    {
++        int scancode, down;
++        while (ps4_pad_next_key(&scancode, &down)) {
++            if (!keyboardIsDisabled()) {
++                keyboardData.key = scancode;
++                keyboardData.down = down;
++                _GNW95_process_key(&keyboardData);
++            }
++        }
++    }
++#endif
++
+     if (gProgramIsActive && !keyboardIsDisabled()) {
+         // NOTE: Uninline
+         int tick = getTicks();
+@@ -1027,14 +1047,20 @@ void _GNW95_lost_focus()
+     }
+ }
+ 
+-void beginTextInput()
++void beginTextInput(const char* initialText)
+ {
+     SDL_StartTextInput();
++#ifdef __PS4__
++    ps4_text_begin(initialText);
++#endif
+ }
+ 
+ void endTextInput()
+ {
+     SDL_StopTextInput();
++#ifdef __PS4__
++    ps4_text_end();
++#endif
+ }
+ 
+ } // namespace fallout
+diff --git a/src/input.h b/src/input.h
+index cef0092..3ddaf0f 100644
+--- a/src/input.h
++++ b/src/input.h
+@@ -33,7 +33,7 @@ void _GNW95_process_message();
+ void _GNW95_clear_time_stamps();
+ void _GNW95_lost_focus();
+ 
+-void beginTextInput();
++void beginTextInput(const char* initialText = nullptr);
+ void endTextInput();
+ 
+ } // namespace fallout
+diff --git a/src/loadsave.cc b/src/loadsave.cc
+index f352c35..a1fbc49 100644
+--- a/src/loadsave.cc
++++ b/src/loadsave.cc
+@@ -2321,7 +2321,7 @@ static int _get_input_str2(int win, int doneKeyCode, int cancelKeyCode, char* de
+     windowRefresh(win);
+     renderPresent();
+ 
+-    beginTextInput();
++    beginTextInput(description);
+ 
+     int blinkCounter = 3;
+     bool blink = false;
+diff --git a/src/movie_lib.cc b/src/movie_lib.cc
+index b1405fa..a88d103 100644
+--- a/src/movie_lib.cc
++++ b/src/movie_lib.cc
+@@ -4,6 +4,15 @@
+ 
+ #include "movie_lib.h"
+ 
++#ifdef __PS4__
++#include "ps4_platform.h"
++#define PS4_MVE_TRACE(...) do { static int n_ = 0; if (n_++ < 4) ps4_log(__VA_ARGS__); } while (0)
++#define PS4_MVE_OP(...) do { static int n_ = 0; if (n_++ < 400) ps4_log(__VA_ARGS__); } while (0)
++#else
++#define PS4_MVE_TRACE(...)
++#define PS4_MVE_OP(...)
++#endif
++
+ #include <assert.h>
+ #include <stdio.h>
+ #include <string.h>
+@@ -648,6 +657,7 @@ int _MVE_rmStepMovie()
+     int v20;
+     unsigned char* v14;
+ 
++    PS4_MVE_TRACE("mve: StepMovie active=%d", (int)rm_active);
+     v0 = rm_len;
+     v1 = (unsigned short*)rm_p;
+ 
+@@ -669,6 +679,7 @@ LABEL_5:
+         v1 = (unsigned short*)((unsigned char*)v1 + v0 + 4);
+         v0 = v5 & 0xFFFF;
+ 
++        PS4_MVE_OP("mve: op %d len %d", (int)((v5 >> 16) & 0xFF), (int)v0);
+         switch ((v5 >> 16) & 0xFF) {
+         case 0:
+             return -1;
+@@ -840,6 +851,7 @@ static void syncReset(int quanta)
+ // 0x4F5570
+ static int _MVE_sndConfigure(int a1, int a2, int a3, int a4, int a5, int a6)
+ {
++    PS4_MVE_TRACE("mve: sndConfigure %d %d %d %d %d %d", a1, a2, a3, a4, a5, a6);
+     MVE_syncSync();
+     _MVE_sndReset();
+ 
+@@ -903,8 +915,10 @@ static void _MVE_sndSync()
+ 
+     v0 = false;
+ 
++    PS4_MVE_OP("mve: sndSync enter active=%d quanta=%d buf=%d", (int)sync_active, (int)sync_wait_quanta, (int)gMveSoundBuffer);
+     sync_late = syncWaitLevel(sync_wait_quanta / 4) > -sync_wait_quanta / 2 && !sync_FrameDropped;
+     sync_FrameDropped = 0;
++    PS4_MVE_OP("mve: sndSync after syncWaitLevel late=%d", (int)sync_late);
+ 
+     if (gMveSoundBuffer == -1) {
+         return;
+@@ -920,6 +934,7 @@ static void _MVE_sndSync()
+         }
+ 
+         dwCurrentWriteCursor = dword_6B36A4;
++        PS4_MVE_OP("mve: sndSync loop status=%u play=%u wr=%u", dwStatus, dwCurrentPlayCursor, (unsigned)dword_6B36A4);
+ 
+         v1 = (gMveBufferBytes + dword_6B39E0[dword_6B3660] - _gSoundTimeBase)
+             % gMveBufferBytes;
+@@ -1037,11 +1052,14 @@ static int syncWaitLevel(int wait)
+     }
+ 
+     deadline = sync_time + wait;
++    PS4_MVE_OP("mve: syncWaitLevel wait=%d sync_time=%d now=%u", wait, (int)sync_time, compat_timeGetTime());
+     do {
+         diff = deadline + 1000 * compat_timeGetTime();
++        PS4_MVE_OP("mve: wait loop diff=%d now=%u", diff, compat_timeGetTime());
+         if (diff < 0) {
+             delay_ms(-diff / 1000 - 3);
+         }
++        PS4_MVE_OP("mve: wait loop after delay now=%u", compat_timeGetTime());
+         diff = deadline + 1000 * compat_timeGetTime();
+     } while (diff < 0);
+ 
+@@ -1189,6 +1207,7 @@ static void _MVE_sndResume()
+ // 0x4F5CB0
+ static int nfConfig(int width, int height, int a3, int is_16_bpp)
+ {
++    PS4_MVE_TRACE("mve: nfConfig %d x %d a3=%d", width, height, a3);
+     byte_6B4016 = a3;
+     nf_width = 8 * width;
+     nf_height = 8 * height * a3;
+@@ -1222,6 +1241,7 @@ static void movieSwapSurfaces()
+ // 0x4F5F40
+ static void sfShowFrame(int dst_x, int dst_y, int a3)
+ {
++    PS4_MVE_TRACE("mve: sfShowFrame a3=%d", a3);
+     dst_x = (sf_ScreenWidth - nf_width) / 2;
+     dst_y = (sf_ScreenHeight - nf_height) / 2;
+ 
+diff --git a/src/platform_compat.cc b/src/platform_compat.cc
+index 95c6eba..eca0bbb 100644
+--- a/src/platform_compat.cc
++++ b/src/platform_compat.cc
+@@ -1,5 +1,6 @@
+ #include "platform_compat.h"
+ 
++#include <errno.h>
+ #include <string.h>
+ 
+ #ifdef _WIN32
+@@ -24,6 +25,9 @@
+ #endif
+ 
+ #include <SDL.h>
++#ifdef __PS4__
++#include "ps4_platform.h"
++#endif
+ 
+ namespace fallout {
+ 
+@@ -209,15 +213,23 @@ int compat_mkdir(const char* path)
+ 
+ #ifdef _WIN32
+     return mkdir(nativePath);
++#else
++#ifdef __PS4__
++    char absPath[COMPAT_MAX_PATH + 32];
++    ps4_abs_path(nativePath, absPath, sizeof(absPath));
++    return mkdir(absPath, 0777);
+ #else
+     return mkdir(nativePath, 0755);
+ #endif
++#endif
+ }
+ 
+ unsigned int compat_timeGetTime()
+ {
+ #ifdef _WIN32
+     return timeGetTime();
++#elif defined(__PS4__)
++    return ps4_ticks_ms();
+ #else
+     static auto start = std::chrono::steady_clock::now();
+     auto now = std::chrono::steady_clock::now();
+@@ -231,7 +243,20 @@ FILE* compat_fopen(const char* path, const char* mode)
+     strcpy(nativePath, path);
+     compat_windows_path_to_native(nativePath);
+     compat_resolve_path(nativePath);
++#ifdef __PS4__
++    char absPath[COMPAT_MAX_PATH + 32];
++    ps4_abs_path(nativePath, absPath, sizeof(absPath));
++    if (strchr(mode, 'w') != nullptr || strchr(mode, 'a') != nullptr) {
++        ps4_make_parent_dirs(absPath);
++    }
++    FILE* f = fopen(absPath, mode);
++    if (f == nullptr && strchr(mode, 'w') != nullptr) {
++        ps4_log("fopen(%s, %s) failed errno=%d", absPath, mode, errno);
++    }
++    return f;
++#else
+     return fopen(nativePath, mode);
++#endif
+ }
+ 
+ gzFile compat_gzopen(const char* path, const char* mode)
+@@ -240,7 +265,16 @@ gzFile compat_gzopen(const char* path, const char* mode)
+     strcpy(nativePath, path);
+     compat_windows_path_to_native(nativePath);
+     compat_resolve_path(nativePath);
++#ifdef __PS4__
++    char absPath[COMPAT_MAX_PATH + 32];
++    ps4_abs_path(nativePath, absPath, sizeof(absPath));
++    if (strchr(mode, 'w') != nullptr || strchr(mode, 'a') != nullptr) {
++        ps4_make_parent_dirs(absPath);
++    }
++    return gzopen(absPath, mode);
++#else
+     return gzopen(nativePath, mode);
++#endif
+ }
+ 
+ char* compat_fgets(char* buffer, int maxCount, FILE* stream)
+@@ -279,7 +313,13 @@ int compat_remove(const char* path)
+     strcpy(nativePath, path);
+     compat_windows_path_to_native(nativePath);
+     compat_resolve_path(nativePath);
++#ifdef __PS4__
++    char absPath[COMPAT_MAX_PATH + 32];
++    ps4_abs_path(nativePath, absPath, sizeof(absPath));
++    return remove(absPath);
++#else
+     return remove(nativePath);
++#endif
+ }
+ 
+ int compat_rename(const char* oldFileName, const char* newFileName)
+@@ -294,7 +334,15 @@ int compat_rename(const char* oldFileName, const char* newFileName)
+     compat_windows_path_to_native(nativeNewFileName);
+     compat_resolve_path(nativeNewFileName);
+ 
++#ifdef __PS4__
++    char absOld[COMPAT_MAX_PATH + 32];
++    char absNew[COMPAT_MAX_PATH + 32];
++    ps4_abs_path(nativeOldFileName, absOld, sizeof(absOld));
++    ps4_abs_path(nativeNewFileName, absNew, sizeof(absNew));
++    return rename(absOld, absNew);
++#else
+     return rename(nativeOldFileName, nativeNewFileName);
++#endif
+ }
+ 
+ void compat_windows_path_to_native(char* path)
+@@ -310,7 +358,7 @@ void compat_windows_path_to_native(char* path)
+ #endif
+ }
+ 
+-void compat_resolve_path(char* path)
++static void compat_resolve_path_impl(char* path)
+ {
+ #ifndef _WIN32
+     char* pch = path;
+@@ -364,13 +412,35 @@ void compat_resolve_path(char* path)
+ #endif
+ }
+ 
++void compat_resolve_path(char* path)
++{
++#ifdef __PS4__
++    // No chdir() on Orbis: resolve relative paths against the work dir, then
++    // copy the (case-fixed) relative part back without growing [path].
++    if (path[0] != '/') {
++        char tmp[COMPAT_MAX_PATH + 32];
++        snprintf(tmp, sizeof(tmp), "%s/%s", PS4_WORK_DIR, path);
++        compat_resolve_path_impl(tmp);
++        strcpy(path, tmp + strlen(PS4_WORK_DIR) + 1);
++        return;
++    }
++#endif
++    compat_resolve_path_impl(path);
++}
++
+ int compat_access(const char* path, int mode)
+ {
+     char nativePath[COMPAT_MAX_PATH];
+     strcpy(nativePath, path);
+     compat_windows_path_to_native(nativePath);
+     compat_resolve_path(nativePath);
++#ifdef __PS4__
++    char absPath[COMPAT_MAX_PATH + 32];
++    ps4_abs_path(nativePath, absPath, sizeof(absPath));
++    return access(absPath, mode);
++#else
+     return access(nativePath, mode);
++#endif
+ }
+ 
+ char* compat_strdup(const char* string)
+diff --git a/src/sound.cc b/src/sound.cc
+index 05fde2f..d8750df 100644
+--- a/src/sound.cc
++++ b/src/sound.cc
+@@ -20,6 +20,10 @@
+ #include "debug.h"
+ #include "platform_compat.h"
+ 
++#ifdef __PS4__
++#include "ps4_platform.h"
++#endif
++
+ namespace fallout {
+ 
+ typedef enum SoundStatusFlags {
+@@ -233,7 +237,13 @@ static int soundOpenData(const char* filePath, int* sampleRate)
+     flags = O_RDONLY;
+ #endif
+ 
++#ifdef __PS4__
++    char absPath[COMPAT_MAX_PATH + 32];
++    ps4_abs_path(filePath, absPath, sizeof(absPath));
++    return open(absPath, flags);
++#else
+     return open(filePath, flags);
++#endif
+ }
+ 
+ // 0x4AC774
+diff --git a/src/svga.cc b/src/svga.cc
+index 8acca96..d5ef100 100644
+--- a/src/svga.cc
++++ b/src/svga.cc
+@@ -14,6 +14,10 @@
+ #include "window_manager.h"
+ #include "window_manager_private.h"
+ 
++#ifdef __PS4__
++#include "ps4_platform.h"
++#endif
++
+ namespace fallout {
+ 
+ static bool createRenderer(int width, int height);
+@@ -173,6 +177,10 @@ int _init_vesa_mode(int width, int height)
+ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
+ {
+     if (gSdlWindow == nullptr) {
++#ifdef __PS4__
++        // The PS4 SDL port only provides a fixed 1080p window surface.
++        gSdlWindow = SDL_CreateWindow(gProgramWindowTitle, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, PS4_SCREEN_WIDTH, PS4_SCREEN_HEIGHT, 0);
++#else
+         SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
+ 
+         Uint32 windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI;
+@@ -182,6 +190,7 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
+         }
+ 
+         gSdlWindow = SDL_CreateWindow(gProgramWindowTitle, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, width * scale, height * scale, windowFlags);
++#endif
+         if (gSdlWindow == nullptr) {
+             return -1;
+         }
+@@ -356,6 +365,13 @@ int screenGetVisibleHeight()
+ 
+ static bool createRenderer(int width, int height)
+ {
++#ifdef __PS4__
++    // No SDL_Renderer: the engine surface is scaled onto the window surface in
++    // renderPresent(), the same path the OpenOrbis SDL2 sample uses.
++    gSdlTextureSurface = SDL_CreateRGBSurfaceWithFormat(0, width, height, 32, SDL_PIXELFORMAT_RGB888);
++    return gSdlTextureSurface != nullptr;
++#endif
++
+     gSdlRenderer = SDL_CreateRenderer(gSdlWindow, -1, 0);
+     if (gSdlRenderer == nullptr) {
+         return false;
+@@ -409,6 +425,29 @@ void handleWindowSizeChanged()
+ 
+ void renderPresent()
+ {
++#ifdef __PS4__
++    SDL_Surface* windowSurface = SDL_GetWindowSurface(gSdlWindow);
++    if (windowSurface == nullptr) {
++        return;
++    }
++
++    // Keep the aspect ratio, centered.
++    int w = windowSurface->w;
++    int h = windowSurface->h;
++    int dw = h * gSdlTextureSurface->w / gSdlTextureSurface->h;
++    int dh = h;
++    if (dw > w) {
++        dw = w;
++        dh = w * gSdlTextureSurface->h / gSdlTextureSurface->w;
++    }
++    SDL_Rect dest = { (w - dw) / 2, (h - dh) / 2, dw, dh };
++
++    SDL_FillRect(windowSurface, nullptr, 0);
++    SDL_BlitScaled(gSdlTextureSurface, nullptr, windowSurface, &dest);
++    SDL_UpdateWindowSurface(gSdlWindow);
++    return;
++#endif
++
+     SDL_UpdateTexture(gSdlTexture, nullptr, gSdlTextureSurface->pixels, gSdlTextureSurface->pitch);
+     SDL_RenderClear(gSdlRenderer);
+     SDL_RenderCopy(gSdlRenderer, gSdlTexture, nullptr, nullptr);
+diff --git a/src/win32.cc b/src/win32.cc
+index 56e8881..fa816a4 100644
+--- a/src/win32.cc
++++ b/src/win32.cc
+@@ -1,5 +1,6 @@
+ #include "win32.h"
+ 
++#include <stdio.h>
+ #include <stdlib.h>
+ 
+ #include <SDL.h>
+@@ -16,6 +17,10 @@
+ #include "platform/ios/paths.h"
+ #endif
+ 
++#ifdef __PS4__
++#include "ps4_platform.h"
++#endif
++
+ namespace fallout {
+ 
+ // 0x51E444
+@@ -54,11 +59,27 @@ int main(int argc, char* argv[])
+     chdir(SDL_AndroidGetExternalStoragePath());
+ #endif
+ 
+-    if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
++#ifdef __PS4__
++    setvbuf(stdout, nullptr, _IONBF, 0);
++    if (ps4_init_filesystem() != 0) {
+         return EXIT_FAILURE;
+     }
++#endif
+ 
++    if (SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS
++#ifdef __PS4__
++            | SDL_INIT_JOYSTICK
++#endif
++            ) != 0) {
++#ifdef __PS4__
++        ps4_log("SDL_Init failed: %s", SDL_GetError());
++#endif
++        return EXIT_FAILURE;
++    }
++
++#ifndef __PS4__
+     atexit(SDL_Quit);
++#endif
+ 
+     SDL_ShowCursor(SDL_DISABLE);
+ 
+@@ -69,6 +90,10 @@ int main(int argc, char* argv[])
+     CloseHandle(GNW95_mutex);
+ #endif
+ 
++#ifdef __PS4__
++    ps4_exit(rc);
++#endif
++
+     return rc;
+ }
+ 
+diff --git a/src/xfile.cc b/src/xfile.cc
+index 551e884..4ba87fc 100644
+--- a/src/xfile.cc
++++ b/src/xfile.cc
+@@ -13,6 +13,13 @@
+ 
+ #include "file_find.h"
+ 
++#ifdef __PS4__
++// Orbis refuses chdir(); the engine only uses it as a directory probe here.
++#include "ps4_platform.h"
++#define getcwd ps4_getcwd
++#define chdir ps4_chdir
++#endif
++
+ namespace fallout {
+ 
+ typedef enum XFileEnumerationEntryType {
