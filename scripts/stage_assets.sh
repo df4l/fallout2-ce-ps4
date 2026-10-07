@@ -34,4 +34,8 @@ done
 (cd "$SRC" && find sound -type f -iname '*.acm' 2>/dev/null) | while read -r f; do
   put "$SRC/$f" "gamedata/$f"
 done
+# fallout2-ce's base mod (its own UI art, ce.msg texts, game.cfg), loaded as a folder.
+(cd external/fallout2-ce/files && find ce.dat -type f) | while read -r f; do
+  put "external/fallout2-ce/files/$f" "gamedata/$f"
+done
 echo "staged $(find -L gamedata -type f | wc -l) files, $(du -shL gamedata | cut -f1)"

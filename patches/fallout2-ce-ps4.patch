@@ -1,8 +1,8 @@
 diff --git a/src/audio_engine.cc b/src/audio_engine.cc
-index 6523c5c..8026e0d 100644
+index 2041ef16..8a6dddbd 100644
 --- a/src/audio_engine.cc
 +++ b/src/audio_engine.cc
-@@ -6,6 +6,10 @@
+@@ -7,6 +7,10 @@
  
  #include <SDL.h>
  
@@ -12,8 +12,8 @@ index 6523c5c..8026e0d 100644
 +
  namespace fallout {
  
- #define AUDIO_ENGINE_SOUND_BUFFERS 8
-@@ -48,6 +52,14 @@ static void audioEngineMixin(void* userData, Uint8* stream, int length)
+ static constexpr int kAudioEngineTargetSampleRate = 44100;
+@@ -69,6 +73,14 @@ static void audioEngineMixin(void* userData, Uint8* stream, int length)
  {
      memset(stream, gAudioEngineSpec.silence, length);
  
@@ -28,7 +28,7 @@ index 6523c5c..8026e0d 100644
      if (!gProgramIsActive) {
          return;
      }
-@@ -56,7 +68,7 @@ static void audioEngineMixin(void* userData, Uint8* stream, int length)
+@@ -77,7 +89,7 @@ static void audioEngineMixin(void* userData, Uint8* stream, int length)
          AudioEngineSoundBuffer* soundBuffer = &(gAudioEngineSoundBuffers[index]);
          std::lock_guard<std::recursive_mutex> lock(soundBuffer->mutex);
  
@@ -37,49 +37,66 @@ index 6523c5c..8026e0d 100644
              int srcFrameSize = soundBuffer->bitsPerSample / 8 * soundBuffer->channels;
  
              unsigned char buffer[1024];
-@@ -103,6 +115,11 @@ bool audioEngineInit()
-     desiredSpec.callback = audioEngineMixin;
- 
-     gAudioEngineDeviceId = SDL_OpenAudioDevice(nullptr, 0, &desiredSpec, &gAudioEngineSpec, SDL_AUDIO_ALLOW_ANY_CHANGE);
+@@ -137,6 +149,11 @@ bool audioEngineInit(int soundBufferCount)
+         | SDL_AUDIO_ALLOW_FORMAT_CHANGE
+         | SDL_AUDIO_ALLOW_SAMPLES_CHANGE;
+     gAudioEngineDeviceId = SDL_OpenAudioDevice(nullptr, 0, &desiredSpec, &gAudioEngineSpec, allowedChanges);
 +#ifdef __PS4__
 +    ps4_log("audio: SDL_OpenAudioDevice -> %d (%s) freq=%d fmt=0x%x ch=%d samples=%d",
 +        (int)gAudioEngineDeviceId, SDL_GetError(), gAudioEngineSpec.freq, (int)gAudioEngineSpec.format,
 +        (int)gAudioEngineSpec.channels, (int)gAudioEngineSpec.samples);
 +#endif
-     if (gAudioEngineDeviceId == -1) {
-         return false;
-     }
-@@ -156,6 +173,12 @@ int audioEngineCreateSoundBuffer(unsigned int size, int bitsPerSample, int chann
-             soundBuffer->pos = 0;
-             soundBuffer->data = malloc(size);
-             soundBuffer->stream = SDL_NewAudioStream(bitsPerSample == 16 ? AUDIO_S16 : AUDIO_S8, channels, rate, gAudioEngineSpec.format, gAudioEngineSpec.channels, gAudioEngineSpec.freq);
-+#ifdef __PS4__
-+            ps4_log("audio: buffer %d size=%u bits=%d ch=%d rate=%d stream=%p", index, size, bitsPerSample, channels, rate, (void*)soundBuffer->stream);
-+            if (soundBuffer->stream == nullptr) {
-+                ps4_log("audio: SDL_NewAudioStream failed: %s", SDL_GetError());
-+            }
-+#endif
-             return index;
-         }
-     }
-diff --git a/src/character_editor.cc b/src/character_editor.cc
-index 0d989a7..c66d528 100644
---- a/src/character_editor.cc
-+++ b/src/character_editor.cc
-@@ -1933,7 +1933,7 @@ static int _get_input_str(int win, int cancelKeyCode, char* text, int maxLength,
+     if (gAudioEngineDeviceId == 0) {
+         gAudioEngineDeviceId = -1;
+         gAudioEngineSoundBuffers.reset();
+diff --git a/src/content_config.cc b/src/content_config.cc
+index 7ae4391a..b55abce8 100644
+--- a/src/content_config.cc
++++ b/src/content_config.cc
+@@ -2,6 +2,10 @@
  
-     windowRefresh(win);
+ #include "game_config_migration.h"
+ 
++#ifdef __PS4__
++#include "ps4_platform.h"
++#endif
++
+ namespace fallout {
+ 
+ Config gContentConfig;
+@@ -23,10 +27,18 @@ void contentConfigInit()
+         return;
+     }
+ 
++#ifdef __PS4__
++    bool baseRead = configRead(&gContentConfig, kConfigPath, true);
++    bool patchRead = configRead(&gContentConfig, kConfigPatchPath, true);
++    char* bigFontColor = nullptr;
++    configGetString(&gContentConfig, "main_menu", "big_font_color", &bigFontColor, "<missing>");
++    ps4_log("content config: game.cfg=%d game#patch.cfg=%d big_font_color=%s", baseRead, patchRead, bigFontColor);
++#else
+     configRead(&gContentConfig, kConfigPath, true);
+     // Patch config allows to override only certain fields, without replacing the whole file.
+     // TODO: remove this after config patching by mods is implemented inside configRead
+     configRead(&gContentConfig, kConfigPatchPath, true);
++#endif
+ }
+ 
+ void contentConfigExit()
+diff --git a/src/dbox.cc b/src/dbox.cc
+index 823a7199..7f2c2070 100644
+--- a/src/dbox.cc
++++ b/src/dbox.cc
+@@ -191,7 +191,7 @@ static int _get_input_str(int win, int cancelKeyCode, std::string& text, int max
+     };
+     redrawText();
  
 -    beginTextInput();
-+    beginTextInput(text);
++    beginTextInput(text.c_str());
  
      int blinkingCounter = 3;
      bool blink = false;
-diff --git a/src/dbox.cc b/src/dbox.cc
-index fc96ae0..6dae6fd 100644
---- a/src/dbox.cc
-+++ b/src/dbox.cc
-@@ -1115,7 +1115,7 @@ int showSaveFileDialog(char* title, char** fileList, char* dest, int fileListLen
+@@ -1133,7 +1133,7 @@ int showSaveFileDialog(char* title, char** fileList, char* dest, int fileListLen
  
      windowRefresh(win);
  
@@ -89,7 +106,7 @@ index fc96ae0..6dae6fd 100644
      int blinkingCounter = 3;
      bool blink = false;
 diff --git a/src/debug.cc b/src/debug.cc
-index a268853..1d27e06 100644
+index 85c6fed7..9de7dc7f 100644
 --- a/src/debug.cc
 +++ b/src/debug.cc
 @@ -11,6 +11,10 @@
@@ -103,26 +120,19 @@ index a268853..1d27e06 100644
  namespace fallout {
  
  static int _debug_puts(char* string);
-@@ -132,6 +136,17 @@ int debugPrint(const char* format, ...)
- 
-     int rc;
+@@ -174,6 +178,10 @@ int debugPrint(const char* format, ...)
+     }
+     va_end(args);
  
 +#ifdef __PS4__
-+    {
-+        char line[260];
-+        va_list copy;
-+        va_copy(copy, args);
-+        vsnprintf(line, sizeof(line), format, copy);
-+        va_end(copy);
-+        ps4_log("dbg: %s", line);
-+    }
++    ps4_log("dbg: %s", string);
 +#endif
 +
+     int rc;
      if (gDebugPrintProc != nullptr) {
-         char string[260];
-         vsnprintf(string, sizeof(string), format, args);
+         rc = gDebugPrintProc(string);
 diff --git a/src/delay.cc b/src/delay.cc
-index dd9fa68..de4d0a3 100644
+index dd9fa685..de4d0a3d 100644
 --- a/src/delay.cc
 +++ b/src/delay.cc
 @@ -2,10 +2,19 @@
@@ -145,12 +155,32 @@ index dd9fa68..de4d0a3 100644
      SDL_Delay(ms);
 +#endif
  }
+diff --git a/src/dfile.cc b/src/dfile.cc
+index ff074600..64d6500a 100644
+--- a/src/dfile.cc
++++ b/src/dfile.cc
+@@ -61,6 +61,14 @@ DBase* dbaseOpen(const char* filePath, int* errorFlags)
+ {
+     assert(filePath); // "filename", "dfile.c", 74
+ 
++#ifdef __PS4__
++    // Orbis fopen() succeeds on directories, which would turn a folder mod
++    // (like ce.dat) into a bogus archive instead of a directory xbase.
++    if (compat_is_dir(filePath)) {
++        return nullptr;
++    }
++#endif
++
+     FILE* stream = compat_fopen(filePath, "rb");
+     if (stream == nullptr) {
+         return nullptr;
 diff --git a/src/dinput.cc b/src/dinput.cc
-index 171d529..3973c30 100644
+index 465f59b4..4f810157 100644
 --- a/src/dinput.cc
 +++ b/src/dinput.cc
-@@ -1,5 +1,9 @@
- #include "dinput.h"
+@@ -6,6 +6,10 @@
+ #include "svga.h"
+ #include "win32.h"
  
 +#ifdef __PS4__
 +#include "ps4_platform.h"
@@ -159,10 +189,23 @@ index 171d529..3973c30 100644
  namespace fallout {
  
  static int gMouseWheelDeltaX = 0;
-@@ -53,6 +57,16 @@ bool mouseDeviceGetData(MouseData* mouseState)
+@@ -57,6 +61,12 @@ bool mouseDeviceInitMode()
+     // "Absolute mode" means cursor position is controlled by the OS, and we read it directly.
+     // Mouse sensitivity settings can only apply in relative mode.
+ 
++#ifdef __PS4__
++    // No mouse on PS4: the gamepad feeds deltas, so stay in relative mode.
++    mouseRelativeMode = true;
++    return true;
++#endif
++
+     bool wantsRelativeMode = gProgramIsActive && (screenIsExclusiveFullscreen() || settings.screen.mouse_lock);
+ 
+     if (wantsRelativeMode) {
+@@ -95,6 +105,16 @@ bool mouseDeviceGetData(MouseData* mouseState)
+     // TODO: Move mouse events processing into `GNW95_process_message` and
      // update mouse position manually.
      SDL_PumpEvents();
- 
 +#ifdef __PS4__
 +    int left, right;
 +    ps4_pad_get_mouse(&(mouseState->x), &(mouseState->y), &left, &right);
@@ -173,24 +216,11 @@ index 171d529..3973c30 100644
 +    return true;
 +#endif
 +
-     Uint32 buttons = SDL_GetRelativeMouseState(&(mouseState->x), &(mouseState->y));
-     mouseState->buttons[0] = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0;
-     mouseState->buttons[1] = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
-@@ -93,7 +107,12 @@ bool keyboardDeviceGetData(KeyboardData* keyboardData)
- // 0x4E070C
- bool mouseDeviceInit()
- {
-+#ifdef __PS4__
-+    // No mouse on PS4: the cursor is driven by the gamepad.
-+    return true;
-+#else
-     return SDL_SetRelativeMouseMode(SDL_TRUE) == 0;
-+#endif
- }
- 
- // 0x4E078C
+     Uint32 buttons = mouseDeviceUsesRelativeMode()
+         ? SDL_GetRelativeMouseState(&(mouseState->x), &(mouseState->y))
+         : SDL_GetMouseState(&(mouseState->x), &(mouseState->y));
 diff --git a/src/file_find.cc b/src/file_find.cc
-index 8671df3..6250d2c 100644
+index 232f7ab3..36b50dde 100644
 --- a/src/file_find.cc
 +++ b/src/file_find.cc
 @@ -4,6 +4,9 @@
@@ -218,7 +248,7 @@ index 8671df3..6250d2c 100644
          return false;
      }
 diff --git a/src/file_utils.cc b/src/file_utils.cc
-index 182d4c9..80be4ba 100644
+index c8e81493..1bd7c21b 100644
 --- a/src/file_utils.cc
 +++ b/src/file_utils.cc
 @@ -11,6 +11,13 @@
@@ -235,7 +265,7 @@ index 182d4c9..80be4ba 100644
  namespace fallout {
  
  static void fileCopy(const char* existingFilePath, const char* newFilePath);
-@@ -20,6 +27,7 @@ int fileCopyDecompressed(const char* existingFilePath, const char* newFilePath)
+@@ -22,6 +29,7 @@ int fileCopyDecompressed(const char* existingFilePath, const char* newFilePath)
  {
      FILE* stream = compat_fopen(existingFilePath, "rb");
      if (stream == nullptr) {
@@ -243,7 +273,7 @@ index 182d4c9..80be4ba 100644
          return -1;
      }
  
-@@ -53,6 +61,7 @@ int fileCopyDecompressed(const char* existingFilePath, const char* newFilePath)
+@@ -52,6 +60,7 @@ int fileCopyDecompressed(const char* existingFilePath, const char* newFilePath)
                  fclose(outStream);
              }
  
@@ -251,7 +281,7 @@ index 182d4c9..80be4ba 100644
              return -1;
          }
      } else {
-@@ -67,6 +76,7 @@ int fileCopyCompressed(const char* existingFilePath, const char* newFilePath)
+@@ -66,6 +75,7 @@ int fileCopyCompressed(const char* existingFilePath, const char* newFilePath)
  {
      FILE* inStream = compat_fopen(existingFilePath, "rb");
      if (inStream == nullptr) {
@@ -259,7 +289,7 @@ index 182d4c9..80be4ba 100644
          return -1;
      }
  
-@@ -84,7 +94,8 @@ int fileCopyCompressed(const char* existingFilePath, const char* newFilePath)
+@@ -83,7 +93,8 @@ int fileCopyCompressed(const char* existingFilePath, const char* newFilePath)
          gzFile outStream = compat_gzopen(newFilePath, "wb");
          if (outStream == nullptr) {
              fclose(inStream);
@@ -268,8 +298,8 @@ index 182d4c9..80be4ba 100644
 +        return -1;
          }
  
-         // Copy byte-by-byte.
-@@ -109,6 +120,7 @@ int _gzdecompress_file(const char* existingFilePath, const char* newFilePath)
+         if (!copyFileToGz(inStream, outStream)) {
+@@ -104,6 +115,7 @@ int _gzdecompress_file(const char* existingFilePath, const char* newFilePath)
  {
      FILE* stream = compat_fopen(existingFilePath, "rb");
      if (stream == nullptr) {
@@ -277,7 +307,7 @@ index 182d4c9..80be4ba 100644
          return -1;
      }
  
-@@ -121,13 +133,15 @@ int _gzdecompress_file(const char* existingFilePath, const char* newFilePath)
+@@ -116,13 +128,15 @@ int _gzdecompress_file(const char* existingFilePath, const char* newFilePath)
      if (magic[0] != 0x1F || magic[1] != 0x8B) {
          gzFile gzstream = compat_gzopen(existingFilePath, "rb");
          if (gzstream == nullptr) {
@@ -294,9 +324,9 @@ index 182d4c9..80be4ba 100644
 +        return -1;
          }
  
-         while (1) {
+         if (!copyGzToFile(gzstream, stream)) {
 diff --git a/src/fps_limiter.cc b/src/fps_limiter.cc
-index 7b62137..0a2f569 100644
+index 7b621376..0a2f569d 100644
 --- a/src/fps_limiter.cc
 +++ b/src/fps_limiter.cc
 @@ -2,6 +2,12 @@
@@ -313,14 +343,17 @@ index 7b62137..0a2f569 100644
  
  FpsLimiter::FpsLimiter(unsigned int fps)
 diff --git a/src/game.cc b/src/game.cc
-index 978a385..efdf84f 100644
+index 89958010..680f45d6 100644
 --- a/src/game.cc
 +++ b/src/game.cc
-@@ -68,6 +68,13 @@
- #include "window_manager_private.h"
- #include "worldmap.h"
+@@ -79,6 +79,16 @@
+ #include <TargetConditionals.h>
+ #endif
  
 +#ifdef __PS4__
++#include <errno.h>
++#include <sys/stat.h>
++
 +#include "ps4_platform.h"
 +#define PS4_TRACE(name) ps4_log("init: " name)
 +#else
@@ -330,7 +363,7 @@ index 978a385..efdf84f 100644
  namespace fallout {
  
  #define HELP_SCREEN_WIDTH (640)
-@@ -124,18 +131,22 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+@@ -139,23 +149,27 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
  {
      char path[COMPAT_MAX_PATH];
  
@@ -344,8 +377,13 @@ index 978a385..efdf84f 100644
 +    PS4_TRACE("sfallConfigInit");
      sfallConfigInit(argc, argv);
  
+     // SFALL: Execute all code that should be executed BEFORE game init
+     sfallOnBeforeGameInit();
+ 
 +    PS4_TRACE("settingsInit");
      settingsInit(isMapper, argc, argv);
+ 
+     debugModeInit(settings.debug.mode.c_str());
  
      gIsMapper = isMapper;
  
@@ -353,7 +391,7 @@ index 978a385..efdf84f 100644
      if (gameDbInit() == -1) {
          settingsExit(false);
          sfallConfigExit();
-@@ -144,10 +155,13 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+@@ -167,6 +181,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
  
      // Message list repository is considered a specialized file manager, so
      // it should be initialized early in the process.
@@ -361,21 +399,25 @@ index 978a385..efdf84f 100644
      messageListRepositoryInit();
  
      programWindowSetTitle(windowTitle);
-+    PS4_TRACE("_initWindow");
-     _initWindow(1, a4);
+@@ -185,7 +200,9 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
+     }
+ 
+     programWindowSetTitle(visibleWindowTitle);
++    PS4_TRACE("windowInit");
+     windowInit(1, flags);
 +    PS4_TRACE("paletteInit");
      paletteInit();
  
-     const char* language = settings.system.language.c_str();
-@@ -183,6 +197,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
-         _debug_register_func(_win_debug);
+     // SFALL: Execute all code that should be executed ON game init
+@@ -217,6 +234,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
+         showSplash();
      }
  
 +    PS4_TRACE("interfaceFontsInit");
      interfaceFontsInit();
      fontManagerAdd(&gModernFontManager);
      fontSetCurrent(font);
-@@ -191,33 +206,47 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+@@ -225,33 +243,47 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
  
      tileDisable();
  
@@ -406,7 +448,7 @@ index 978a385..efdf84f 100644
      critterInit();
 +    PS4_TRACE("aiInit");
      aiInit();
-     _inven_reset_dude();
+     inventoryResetDude();
  
 +    PS4_TRACE("gameSoundInit");
      if (gameSoundInit() != 0) {
@@ -423,7 +465,7 @@ index 978a385..efdf84f 100644
      if (gameMoviesInit() != 0) {
          debugPrint("Failed on gmovie_init\n");
          return -1;
-@@ -225,6 +254,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+@@ -259,6 +291,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
  
      debugPrint(">gmovie_init\t");
  
@@ -431,7 +473,7 @@ index 978a385..efdf84f 100644
      if (movieEffectsInit() != 0) {
          debugPrint("Failed on moviefx_init\n");
          return -1;
-@@ -232,6 +262,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+@@ -266,6 +299,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
  
      debugPrint(">moviefx_init\t");
  
@@ -439,7 +481,7 @@ index 978a385..efdf84f 100644
      if (isoInit() != 0) {
          debugPrint("Failed on iso_init\n");
          return -1;
-@@ -239,6 +270,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+@@ -273,6 +307,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
  
      debugPrint(">iso_init\t");
  
@@ -447,7 +489,7 @@ index 978a385..efdf84f 100644
      if (gameMouseInit() != 0) {
          debugPrint("Failed on gmouse_init\n");
          return -1;
-@@ -246,6 +278,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+@@ -280,6 +315,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
  
      debugPrint(">gmouse_init\t");
  
@@ -455,7 +497,7 @@ index 978a385..efdf84f 100644
      if (protoInit() != 0) {
          debugPrint("Failed on proto_init\n");
          return -1;
-@@ -253,9 +286,11 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+@@ -287,9 +323,11 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
  
      debugPrint(">proto_init\t");
  
@@ -467,7 +509,7 @@ index 978a385..efdf84f 100644
      if (scriptsInit() != 0) {
          debugPrint("Failed on scr_init\n");
          return -1;
-@@ -284,16 +319,21 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+@@ -318,16 +356,21 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
  
      debugPrint(">wmWorldMap_init\t");
  
@@ -489,7 +531,7 @@ index 978a385..efdf84f 100644
      if (gameDialogInit() != 0) {
          debugPrint("Failed on gdialog_init\n");
          return -1;
-@@ -301,6 +341,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+@@ -335,6 +378,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
  
      debugPrint(">gdialog_init\t");
  
@@ -497,7 +539,7 @@ index 978a385..efdf84f 100644
      if (combatInit() != 0) {
          debugPrint("Failed on combat_init\n");
          return -1;
-@@ -308,6 +349,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+@@ -342,6 +386,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
  
      debugPrint(">combat_init\t");
  
@@ -505,15 +547,15 @@ index 978a385..efdf84f 100644
      if (automapInit() != 0) {
          debugPrint("Failed on automap_init\n");
          return -1;
-@@ -345,6 +387,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+@@ -372,6 +417,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
  
-     debugPrint(">init_options_menu\n");
+     debugPrint(">scr_disable\t");
  
 +    PS4_TRACE("endgameDeathEndingInit");
      if (endgameDeathEndingInit() != 0) {
          debugPrint("Failed on endgameDeathEndingInit");
          return -1;
-@@ -353,6 +396,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int a4
+@@ -380,6 +426,7 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
      debugPrint(">endgameDeathEndingInit\n");
  
      // SFALL
@@ -521,13 +563,40 @@ index 978a385..efdf84f 100644
      premadeCharactersInit();
  
      if (!sfall_gl_vars_init()) {
+@@ -1366,6 +1413,26 @@ static void TryLoadBaseCEMod()
+         return;
+     }
+ 
++#ifdef __PS4__
++    // Shipped read-only inside the pkg (staged by scripts/stage_assets.sh).
++    // Probed with stat(): access() is not relied upon under /app0.
++    {
++        static const char kPs4BaseModPath[] = "/app0/gamedata/ce.dat";
++        struct stat st;
++        int statRc = stat(kPs4BaseModPath, &st);
++        ps4_log("ce.dat: stat=%d errno=%d dir=%d access=%d", statRc, statRc != 0 ? errno : 0,
++            statRc == 0 && S_ISDIR(st.st_mode), compat_access(kPs4BaseModPath, 0));
++        if (statRc == 0) {
++            found = true;
++            debugPrint("Loading base FO:CE mod: %s\n", kPs4BaseModPath);
++            if (dbOpen(kPs4BaseModPath) != -1) {
++                return;
++            }
++            openFailed = true;
++        }
++    }
++#endif
++
+ #if __APPLE__ && TARGET_OS_OSX
+     const char* bundleResourcesPath = getMacOsBundleResourcesPath();
+     if (bundleResourcesPath != nullptr) {
 diff --git a/src/input.cc b/src/input.cc
-index 33acd6e..9805505 100644
+index d8c592ba..ff4216fc 100644
 --- a/src/input.cc
 +++ b/src/input.cc
-@@ -15,6 +15,12 @@
- #include "touch.h"
+@@ -22,6 +22,12 @@
  #include "win32.h"
+ #include "window_manager.h"
  
 +#ifdef __PS4__
 +#include "ps4_platform.h"
@@ -538,7 +607,7 @@ index 33acd6e..9805505 100644
  namespace fallout {
  
  typedef struct InputEvent {
-@@ -961,6 +967,20 @@ void _GNW95_process_message()
+@@ -1069,6 +1075,20 @@ void _GNW95_process_message()
  
      touch_process_gesture();
  
@@ -559,7 +628,7 @@ index 33acd6e..9805505 100644
      if (gProgramIsActive && !keyboardIsDisabled()) {
          // NOTE: Uninline
          int tick = getTicks();
-@@ -1027,14 +1047,20 @@ void _GNW95_lost_focus()
+@@ -1135,14 +1155,20 @@ void _GNW95_lost_focus()
      }
  }
  
@@ -582,10 +651,10 @@ index 33acd6e..9805505 100644
  
  } // namespace fallout
 diff --git a/src/input.h b/src/input.h
-index cef0092..3ddaf0f 100644
+index f6b6d9a3..79eb5255 100644
 --- a/src/input.h
 +++ b/src/input.h
-@@ -33,7 +33,7 @@ void _GNW95_process_message();
+@@ -37,7 +37,7 @@ void _GNW95_process_message();
  void _GNW95_clear_time_stamps();
  void _GNW95_lost_focus();
  
@@ -595,10 +664,10 @@ index cef0092..3ddaf0f 100644
  
  } // namespace fallout
 diff --git a/src/loadsave.cc b/src/loadsave.cc
-index f352c35..a1fbc49 100644
+index 02535e67..651bf1d0 100644
 --- a/src/loadsave.cc
 +++ b/src/loadsave.cc
-@@ -2321,7 +2321,7 @@ static int _get_input_str2(int win, int doneKeyCode, int cancelKeyCode, char* de
+@@ -2757,7 +2757,7 @@ static int _get_input_str2(int win, int doneKeyCode, int cancelKeyCode, char* de
      windowRefresh(win);
      renderPresent();
  
@@ -607,8 +676,91 @@ index f352c35..a1fbc49 100644
  
      int blinkCounter = 3;
      bool blink = false;
+diff --git a/src/movie.cc b/src/movie.cc
+index 278f908e..ba9a91f5 100644
+--- a/src/movie.cc
++++ b/src/movie.cc
+@@ -53,7 +53,13 @@ static int _stepMovie();
+ static int gMovieWindow = -1;
+ 
+ struct MovieDirectOverlay {
++#ifdef __PS4__
++    // No SDL_Renderer on PS4: the scaled overlay is a software surface blitted
++    // onto the screen surface in renderPresent().
++    SDL_Surface* texture = nullptr;
++#else
+     SDL_Texture* texture = nullptr;
++#endif
+     int srcWidth = 0;
+     int srcHeight = 0;
+     SDL_Rect dstRect = { 0, 0, 0, 0 };
+@@ -66,7 +72,11 @@ static MovieDirectOverlay movieDirectOverlay;
+ static void movieDirectOverlayDestroy()
+ {
+     if (movieDirectOverlay.texture != nullptr) {
++#ifdef __PS4__
++        SDL_FreeSurface(movieDirectOverlay.texture);
++#else
+         SDL_DestroyTexture(movieDirectOverlay.texture);
++#endif
+         movieDirectOverlay.texture = nullptr;
+     }
+ 
+@@ -87,6 +97,13 @@ static bool movieDirectOverlayEnsureTexture(int width, int height)
+ 
+     movieDirectOverlayDestroy();
+ 
++#ifdef __PS4__
++    // Same format as the screen surface so SDL_BlitScaled takes the stretch fast path.
++    movieDirectOverlay.texture = SDL_CreateRGBSurfaceWithFormat(0, width, height, 32, SDL_PIXELFORMAT_RGB888);
++    if (movieDirectOverlay.texture == nullptr) {
++        return false;
++    }
++#else
+     movieDirectOverlay.texture = SDL_CreateTexture(gSdlRenderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
+     if (movieDirectOverlay.texture == nullptr) {
+         return false;
+@@ -95,6 +112,7 @@ static bool movieDirectOverlayEnsureTexture(int width, int height)
+     SDL_SetTextureBlendMode(movieDirectOverlay.texture, SDL_BLENDMODE_NONE);
+ #if SDL_VERSION_ATLEAST(2, 0, 12)
+     SDL_SetTextureScaleMode(movieDirectOverlay.texture, SDL_ScaleModeNearest);
++#endif
+ #endif
+ 
+     movieDirectOverlay.srcWidth = width;
+@@ -132,8 +150,17 @@ static void movieDirectOverlayUpload(unsigned char* pixels, int srcWidth, int sr
+         }
+     }
+ 
++#ifdef __PS4__
++    SDL_Surface* surface = movieDirectOverlay.texture;
++    for (int y = 0; y < height; y++) {
++        memcpy(static_cast<unsigned char*>(surface->pixels) + y * surface->pitch,
++            movieDirectOverlay.uploadBuffer.data() + y * width,
++            width * sizeof(uint32_t));
++    }
++#else
+     SDL_Rect rect = { 0, 0, width, height };
+     SDL_UpdateTexture(movieDirectOverlay.texture, &rect, movieDirectOverlay.uploadBuffer.data(), width * static_cast<int>(sizeof(uint32_t)));
++#endif
+ }
+ 
+ // 0x5195BC subtitleFont
+@@ -321,7 +348,12 @@ void movieRenderDirectOverlay()
+         return;
+     }
+ 
++#ifdef __PS4__
++    SDL_Rect dstRect = movieDirectOverlay.dstRect;
++    SDL_BlitScaled(movieDirectOverlay.texture, nullptr, gSdlTextureSurface, &dstRect);
++#else
+     SDL_RenderCopy(gSdlRenderer, movieDirectOverlay.texture, nullptr, &movieDirectOverlay.dstRect);
++#endif
+ }
+ 
+ void movieHandleRendererReset()
 diff --git a/src/movie_lib.cc b/src/movie_lib.cc
-index b1405fa..a88d103 100644
+index 0ad48743..72837d85 100644
 --- a/src/movie_lib.cc
 +++ b/src/movie_lib.cc
 @@ -4,6 +4,15 @@
@@ -643,15 +795,15 @@ index b1405fa..a88d103 100644
          switch ((v5 >> 16) & 0xFF) {
          case 0:
              return -1;
-@@ -840,6 +851,7 @@ static void syncReset(int quanta)
- // 0x4F5570
+@@ -849,6 +860,7 @@ void MVE_rmResetSync()
+ // 0x4F5570 MVE_sndConfigure
  static int _MVE_sndConfigure(int a1, int a2, int a3, int a4, int a5, int a6)
  {
 +    PS4_MVE_TRACE("mve: sndConfigure %d %d %d %d %d %d", a1, a2, a3, a4, a5, a6);
      MVE_syncSync();
      _MVE_sndReset();
  
-@@ -903,8 +915,10 @@ static void _MVE_sndSync()
+@@ -912,8 +924,10 @@ static void _MVE_sndSync()
  
      v0 = false;
  
@@ -662,7 +814,7 @@ index b1405fa..a88d103 100644
  
      if (gMveSoundBuffer == -1) {
          return;
-@@ -920,6 +934,7 @@ static void _MVE_sndSync()
+@@ -929,6 +943,7 @@ static void _MVE_sndSync()
          }
  
          dwCurrentWriteCursor = dword_6B36A4;
@@ -670,7 +822,7 @@ index b1405fa..a88d103 100644
  
          v1 = (gMveBufferBytes + dword_6B39E0[dword_6B3660] - _gSoundTimeBase)
              % gMveBufferBytes;
-@@ -1037,11 +1052,14 @@ static int syncWaitLevel(int wait)
+@@ -1046,11 +1061,14 @@ static int syncWaitLevel(int wait)
      }
  
      deadline = sync_time + wait;
@@ -685,16 +837,16 @@ index b1405fa..a88d103 100644
          diff = deadline + 1000 * compat_timeGetTime();
      } while (diff < 0);
  
-@@ -1189,6 +1207,7 @@ static void _MVE_sndResume()
- // 0x4F5CB0
+@@ -1198,6 +1216,7 @@ static void _MVE_sndResume()
+ // 0x4F5CB0 nfConfig
  static int nfConfig(int width, int height, int a3, int is_16_bpp)
  {
 +    PS4_MVE_TRACE("mve: nfConfig %d x %d a3=%d", width, height, a3);
      byte_6B4016 = a3;
      nf_width = 8 * width;
      nf_height = 8 * height * a3;
-@@ -1222,6 +1241,7 @@ static void movieSwapSurfaces()
- // 0x4F5F40
+@@ -1231,6 +1250,7 @@ static void movieSwapSurfaces()
+ // 0x4F5F40 sfShowFrame
  static void sfShowFrame(int dst_x, int dst_y, int a3)
  {
 +    PS4_MVE_TRACE("mve: sfShowFrame a3=%d", a3);
@@ -702,7 +854,7 @@ index b1405fa..a88d103 100644
      dst_y = (sf_ScreenHeight - nf_height) / 2;
  
 diff --git a/src/platform_compat.cc b/src/platform_compat.cc
-index 95c6eba..eca0bbb 100644
+index a9a6c10d..50189479 100644
 --- a/src/platform_compat.cc
 +++ b/src/platform_compat.cc
 @@ -1,5 +1,6 @@
@@ -711,8 +863,8 @@ index 95c6eba..eca0bbb 100644
 +#include <errno.h>
  #include <string.h>
  
- #ifdef _WIN32
-@@ -24,6 +25,9 @@
+ #include <string>
+@@ -29,6 +30,9 @@
  #endif
  
  #include <SDL.h>
@@ -722,22 +874,62 @@ index 95c6eba..eca0bbb 100644
  
  namespace fallout {
  
-@@ -209,15 +213,23 @@ int compat_mkdir(const char* path)
+@@ -290,6 +294,10 @@ int compat_mkdir(const char* path)
  
  #ifdef _WIN32
-     return mkdir(nativePath);
-+#else
+     int rc = mkdir(nativePath);
++#elif defined(__PS4__)
++    char absPath[COMPAT_MAX_PATH + 32];
++    ps4_abs_path(nativePath, absPath, sizeof(absPath));
++    int rc = mkdir(absPath, 0777);
+ #else
+     int rc = mkdir(nativePath, 0755);
+ #endif
+@@ -327,6 +335,12 @@ bool compat_is_dir(const char* path)
+ {
+     char nativePath[COMPAT_MAX_PATH];
+     compat_prepare_native_path(nativePath, path);
 +#ifdef __PS4__
 +    char absPath[COMPAT_MAX_PATH + 32];
 +    ps4_abs_path(nativePath, absPath, sizeof(absPath));
-+    return mkdir(absPath, 0777);
- #else
-     return mkdir(nativePath, 0755);
- #endif
++#else
++    const char* absPath = nativePath;
 +#endif
- }
  
- unsigned int compat_timeGetTime()
+ #ifdef _WIN32
+     struct _stat info;
+@@ -336,7 +350,7 @@ bool compat_is_dir(const char* path)
+     return (info.st_mode & _S_IFDIR) != 0;
+ #else
+     struct stat info;
+-    if (stat(nativePath, &info) != 0) {
++    if (stat(absPath, &info) != 0) {
+         return false;
+     }
+     return S_ISDIR(info.st_mode);
+@@ -347,6 +361,12 @@ bool compat_file_exists(const char* filePath)
+ {
+     char nativePath[COMPAT_MAX_PATH];
+     compat_prepare_native_path(nativePath, filePath);
++#ifdef __PS4__
++    char absPath[COMPAT_MAX_PATH + 32];
++    ps4_abs_path(nativePath, absPath, sizeof(absPath));
++#else
++    const char* absPath = nativePath;
++#endif
+ 
+ #ifdef _WIN32
+     struct _stat info;
+@@ -356,7 +376,7 @@ bool compat_file_exists(const char* filePath)
+     return (info.st_mode & _S_IFDIR) == 0;
+ #else
+     struct stat info;
+-    if (stat(nativePath, &info) != 0) {
++    if (stat(absPath, &info) != 0) {
+         return false;
+     }
+     return !S_ISDIR(info.st_mode);
+@@ -367,6 +387,8 @@ unsigned int compat_timeGetTime()
  {
  #ifdef _WIN32
      return timeGetTime();
@@ -746,75 +938,79 @@ index 95c6eba..eca0bbb 100644
  #else
      static auto start = std::chrono::steady_clock::now();
      auto now = std::chrono::steady_clock::now();
-@@ -231,7 +243,20 @@ FILE* compat_fopen(const char* path, const char* mode)
-     strcpy(nativePath, path);
-     compat_windows_path_to_native(nativePath);
-     compat_resolve_path(nativePath);
+@@ -383,7 +405,21 @@ FILE* compat_fopen(const char* path, const char* mode)
+ 
+     char nativePath[COMPAT_MAX_PATH];
+     compat_prepare_native_path(nativePath, path);
+-    FILE* stream = fopen(nativePath, mode);
 +#ifdef __PS4__
 +    char absPath[COMPAT_MAX_PATH + 32];
 +    ps4_abs_path(nativePath, absPath, sizeof(absPath));
-+    if (strchr(mode, 'w') != nullptr || strchr(mode, 'a') != nullptr) {
++    if (mayWrite) {
 +        ps4_make_parent_dirs(absPath);
 +    }
-+    FILE* f = fopen(absPath, mode);
-+    if (f == nullptr && strchr(mode, 'w') != nullptr) {
++#else
++    const char* absPath = nativePath;
++#endif
++    FILE* stream = fopen(absPath, mode);
++#ifdef __PS4__
++    if (stream == nullptr && mayWrite) {
 +        ps4_log("fopen(%s, %s) failed errno=%d", absPath, mode, errno);
 +    }
-+    return f;
-+#else
-     return fopen(nativePath, mode);
 +#endif
- }
+     if (mayWrite && stream != nullptr) {
+         compatDirectoryEntryCacheClear();
+     }
+@@ -399,7 +435,16 @@ gzFile compat_gzopen(const char* path, const char* mode)
  
- gzFile compat_gzopen(const char* path, const char* mode)
-@@ -240,7 +265,16 @@ gzFile compat_gzopen(const char* path, const char* mode)
-     strcpy(nativePath, path);
-     compat_windows_path_to_native(nativePath);
-     compat_resolve_path(nativePath);
+     char nativePath[COMPAT_MAX_PATH];
+     compat_prepare_native_path(nativePath, path);
+-    gzFile stream = gzopen(nativePath, mode);
 +#ifdef __PS4__
 +    char absPath[COMPAT_MAX_PATH + 32];
 +    ps4_abs_path(nativePath, absPath, sizeof(absPath));
-+    if (strchr(mode, 'w') != nullptr || strchr(mode, 'a') != nullptr) {
++    if (mayWrite) {
 +        ps4_make_parent_dirs(absPath);
 +    }
-+    return gzopen(absPath, mode);
 +#else
-     return gzopen(nativePath, mode);
++    const char* absPath = nativePath;
 +#endif
- }
++    gzFile stream = gzopen(absPath, mode);
+     if (mayWrite && stream != nullptr) {
+         compatDirectoryEntryCacheClear();
+     }
+@@ -442,7 +487,13 @@ int compat_remove(const char* path)
  
- char* compat_fgets(char* buffer, int maxCount, FILE* stream)
-@@ -279,7 +313,13 @@ int compat_remove(const char* path)
-     strcpy(nativePath, path);
-     compat_windows_path_to_native(nativePath);
-     compat_resolve_path(nativePath);
+     char nativePath[COMPAT_MAX_PATH];
+     compat_prepare_native_path(nativePath, path);
+-    int rc = remove(nativePath);
 +#ifdef __PS4__
 +    char absPath[COMPAT_MAX_PATH + 32];
 +    ps4_abs_path(nativePath, absPath, sizeof(absPath));
-+    return remove(absPath);
 +#else
-     return remove(nativePath);
++    const char* absPath = nativePath;
 +#endif
- }
- 
- int compat_rename(const char* oldFileName, const char* newFileName)
-@@ -294,7 +334,15 @@ int compat_rename(const char* oldFileName, const char* newFileName)
-     compat_windows_path_to_native(nativeNewFileName);
-     compat_resolve_path(nativeNewFileName);
++    int rc = remove(absPath);
+     if (rc == 0) {
+         compatDirectoryEntryCacheClear();
+     }
+@@ -459,7 +510,15 @@ int compat_rename(const char* oldFileName, const char* newFileName)
+     char nativeNewFileName[COMPAT_MAX_PATH];
+     compat_prepare_native_path(nativeNewFileName, newFileName);
  
 +#ifdef __PS4__
 +    char absOld[COMPAT_MAX_PATH + 32];
 +    char absNew[COMPAT_MAX_PATH + 32];
 +    ps4_abs_path(nativeOldFileName, absOld, sizeof(absOld));
 +    ps4_abs_path(nativeNewFileName, absNew, sizeof(absNew));
-+    return rename(absOld, absNew);
++    int rc = rename(absOld, absNew);
 +#else
-     return rename(nativeOldFileName, nativeNewFileName);
+     int rc = rename(nativeOldFileName, nativeNewFileName);
 +#endif
- }
- 
- void compat_windows_path_to_native(char* path)
-@@ -310,7 +358,7 @@ void compat_windows_path_to_native(char* path)
+     if (rc == 0) {
+         compatDirectoryEntryCacheClear();
+     }
+@@ -479,7 +538,7 @@ void compat_windows_path_to_native(char* path)
  #endif
  }
  
@@ -823,7 +1019,7 @@ index 95c6eba..eca0bbb 100644
  {
  #ifndef _WIN32
      char* pch = path;
-@@ -364,13 +412,35 @@ void compat_resolve_path(char* path)
+@@ -534,11 +593,33 @@ void compat_resolve_path(char* path)
  #endif
  }
  
@@ -846,24 +1042,23 @@ index 95c6eba..eca0bbb 100644
  int compat_access(const char* path, int mode)
  {
      char nativePath[COMPAT_MAX_PATH];
-     strcpy(nativePath, path);
-     compat_windows_path_to_native(nativePath);
-     compat_resolve_path(nativePath);
+     compat_prepare_native_path(nativePath, path);
+-    return access(nativePath, mode);
 +#ifdef __PS4__
 +    char absPath[COMPAT_MAX_PATH + 32];
 +    ps4_abs_path(nativePath, absPath, sizeof(absPath));
-+    return access(absPath, mode);
 +#else
-     return access(nativePath, mode);
++    const char* absPath = nativePath;
 +#endif
++    return access(absPath, mode);
  }
  
  char* compat_strdup(const char* string)
 diff --git a/src/sound.cc b/src/sound.cc
-index 05fde2f..d8750df 100644
+index be1c79b3..1b38b1d9 100644
 --- a/src/sound.cc
 +++ b/src/sound.cc
-@@ -20,6 +20,10 @@
+@@ -21,6 +21,10 @@
  #include "debug.h"
  #include "platform_compat.h"
  
@@ -874,7 +1069,7 @@ index 05fde2f..d8750df 100644
  namespace fallout {
  
  typedef enum SoundStatusFlags {
-@@ -233,7 +237,13 @@ static int soundOpenData(const char* filePath, int* sampleRate)
+@@ -234,7 +238,13 @@ static int soundOpenData(const char* filePath, AudioFileInfo* openInfo, bool* is
      flags = O_RDONLY;
  #endif
  
@@ -889,11 +1084,11 @@ index 05fde2f..d8750df 100644
  
  // 0x4AC774
 diff --git a/src/svga.cc b/src/svga.cc
-index 8acca96..d5ef100 100644
+index 28bd5a2a..b2032e67 100644
 --- a/src/svga.cc
 +++ b/src/svga.cc
-@@ -14,6 +14,10 @@
- #include "window_manager.h"
+@@ -22,6 +22,10 @@
+ #include "win32.h"
  #include "window_manager_private.h"
  
 +#ifdef __PS4__
@@ -903,8 +1098,8 @@ index 8acca96..d5ef100 100644
  namespace fallout {
  
  static bool createRenderer(int width, int height);
-@@ -173,6 +177,10 @@ int _init_vesa_mode(int width, int height)
- int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
+@@ -161,6 +165,10 @@ int _init_vesa_mode(int width, int height)
+ int _GNW95_init_window(int width, int height, WindowMode mode, int scale)
  {
      if (gSdlWindow == nullptr) {
 +#ifdef __PS4__
@@ -914,7 +1109,7 @@ index 8acca96..d5ef100 100644
          SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
  
          Uint32 windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI;
-@@ -182,6 +190,7 @@ int _GNW95_init_window(int width, int height, bool fullscreen, int scale)
+@@ -172,6 +180,7 @@ int _GNW95_init_window(int width, int height, WindowMode mode, int scale)
          }
  
          gSdlWindow = SDL_CreateWindow(gProgramWindowTitle, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, width * scale, height * scale, windowFlags);
@@ -922,7 +1117,7 @@ index 8acca96..d5ef100 100644
          if (gSdlWindow == nullptr) {
              return -1;
          }
-@@ -356,6 +365,13 @@ int screenGetVisibleHeight()
+@@ -359,6 +368,13 @@ bool screenIsExclusiveFullscreen()
  
  static bool createRenderer(int width, int height)
  {
@@ -936,7 +1131,7 @@ index 8acca96..d5ef100 100644
      gSdlRenderer = SDL_CreateRenderer(gSdlWindow, -1, 0);
      if (gSdlRenderer == nullptr) {
          return false;
-@@ -409,6 +425,29 @@ void handleWindowSizeChanged()
+@@ -470,6 +486,32 @@ void renderFpsCounter()
  
  void renderPresent()
  {
@@ -957,6 +1152,9 @@ index 8acca96..d5ef100 100644
 +    }
 +    SDL_Rect dest = { (w - dw) / 2, (h - dh) / 2, dw, dh };
 +
++    // Scaled movie frames are composited onto the screen surface first.
++    movieRenderDirectOverlay();
++
 +    SDL_FillRect(windowSurface, nullptr, 0);
 +    SDL_BlitScaled(gSdlTextureSurface, nullptr, windowSurface, &dest);
 +    SDL_UpdateWindowSurface(gSdlWindow);
@@ -967,7 +1165,7 @@ index 8acca96..d5ef100 100644
      SDL_RenderClear(gSdlRenderer);
      SDL_RenderCopy(gSdlRenderer, gSdlTexture, nullptr, nullptr);
 diff --git a/src/win32.cc b/src/win32.cc
-index 56e8881..fa816a4 100644
+index 36f04545..3e6e4651 100644
 --- a/src/win32.cc
 +++ b/src/win32.cc
 @@ -1,5 +1,6 @@
@@ -977,9 +1175,9 @@ index 56e8881..fa816a4 100644
  #include <stdlib.h>
  
  #include <SDL.h>
-@@ -16,6 +17,10 @@
- #include "platform/ios/paths.h"
- #endif
+@@ -33,6 +34,10 @@
+ // explicit `atexit` group
+ #include "audio_engine.h"
  
 +#ifdef __PS4__
 +#include "ps4_platform.h"
@@ -987,8 +1185,8 @@ index 56e8881..fa816a4 100644
 +
  namespace fallout {
  
- // 0x51E444
-@@ -54,11 +59,27 @@ int main(int argc, char* argv[])
+ // 0x51E444 GNW95_isActive
+@@ -101,14 +106,30 @@ int main(int argc, char* argv[])
      chdir(SDL_AndroidGetExternalStoragePath());
  #endif
  
@@ -1012,12 +1210,15 @@ index 56e8881..fa816a4 100644
 +    }
 +
 +#ifndef __PS4__
-     atexit(SDL_Quit);
+     atexit([] {
+         audioEngineExit();
+         SDL_Quit();
+     });
 +#endif
  
      SDL_ShowCursor(SDL_DISABLE);
  
-@@ -69,6 +90,10 @@ int main(int argc, char* argv[])
+@@ -123,6 +144,10 @@ int main(int argc, char* argv[])
      CloseHandle(GNW95_mutex);
  #endif
  
@@ -1029,11 +1230,11 @@ index 56e8881..fa816a4 100644
  }
  
 diff --git a/src/xfile.cc b/src/xfile.cc
-index 551e884..4ba87fc 100644
+index 1e6c7124..a2270534 100644
 --- a/src/xfile.cc
 +++ b/src/xfile.cc
-@@ -13,6 +13,13 @@
- 
+@@ -14,6 +14,13 @@
+ #include "debug.h"
  #include "file_find.h"
  
 +#ifdef __PS4__
@@ -1046,3 +1247,23 @@ index 551e884..4ba87fc 100644
  namespace fallout {
  
  typedef enum XFileEnumerationEntryType {
+@@ -535,6 +542,9 @@ bool xbaseOpen(const char* path)
+     if (dbase != nullptr) {
+         xbase->isDbase = true;
+         xbase->dbase = dbase;
++#ifdef __PS4__
++        ps4_log("xbase: %s opened as dbase", path);
++#endif
+         xbase->next = gXbaseHead;
+         gXbaseHead = xbase;
+         return true;
+@@ -562,6 +572,9 @@ bool xbaseOpen(const char* path)
+     }
+ 
+     if (compat_is_dir(path)) {
++#ifdef __PS4__
++        ps4_log("xbase: %s opened as directory", path);
++#endif
+         xbase->next = gXbaseHead;
+         gXbaseHead = xbase;
+         return true;

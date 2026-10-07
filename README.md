@@ -1,6 +1,6 @@
 # Fallout 2 CE for PS4
 
-A homebrew port of [Fallout 2 Community Edition](https://github.com/alexbatalov/fallout2-ce) to the PlayStation 4, built with the [OpenOrbis PS4 Toolchain](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain). The output is a `.pkg` for a jailbroken console running GoldHEN.
+A homebrew port of [Fallout 2 Community Edition](https://github.com/fallout2-ce/fallout2-ce) to the PlayStation 4, built with the [OpenOrbis PS4 Toolchain](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain). The output is a `.pkg` for a jailbroken console running GoldHEN.
 
 **No game data is included.** You need your own copy of Fallout 2 (GOG or Steam, Windows version).
 
@@ -13,7 +13,7 @@ Tested on real hardware: intro movies, main menu, new game, character creation (
 ```
 .
 ├── build.sh                 Build entry point (wraps make with the right environment)
-├── Makefile                 PS4 build: compiles fallout2-ce + zlib + fpattern + glue, packages the .pkg
+├── Makefile                 PS4 build: compiles fallout2-ce (+ its vendored fpattern, lodepng, stb_vorbis) + zlib + glue, packages the .pkg
 ├── sources.txt              fallout2-ce source list (from its CMakeLists.txt)
 ├── src/ps4_platform.{h,cc}  PS4 glue: filesystem, gamepad-to-mouse, IME keyboard, clock, logging
 ├── patches/
@@ -23,10 +23,9 @@ Tested on real hardware: intro movies, main menu, new game, character creation (
 │   ├── stage_assets.sh      Copies your game files into gamedata/
 │   └── fix_gp4.py           Fixes the <rootdir> section emitted by create-gp4
 └── external/                Git submodules
-    ├── fallout2-ce          alexbatalov/fallout2-ce @ e97087b (+ patch)
+    ├── fallout2-ce          fallout2-ce/fallout2-ce @ 85134d3 (+ patch)
     ├── PS4Toolchain         OpenOrbis/OpenOrbis-PS4-Toolchain @ v0.5.4 (+ release binaries)
-    ├── zlib                 madler/zlib @ v1.3.1
-    └── fpattern             alexbatalov/fpattern @ v1.9
+    └── zlib                 madler/zlib @ v1.3.1
 ```
 
 ## Host requirements
@@ -113,14 +112,14 @@ The game writes `/data/fallout2/ps4.log` (startup steps, engine debug messages, 
 Edit the files in `external/fallout2-ce/src` directly, then regenerate the patch:
 
 ```bash
-git -C external/fallout2-ce diff > patches/fallout2-ce-ps4.patch
+git -C external/fallout2-ce diff HEAD > patches/fallout2-ce-ps4.patch
 ```
 
 Engine changes stay inside `#ifdef __PS4__` blocks; platform code belongs in `src/`. To move to a newer fallout2-ce, update the submodule commit, re-apply the patch and fix any conflicts.
 
 ## Licenses
 
-- **fallout2-ce** is under the [Sustainable Use License](https://github.com/alexbatalov/fallout2-ce/blob/main/LICENSE.md). The patch in `patches/` modifies it and is distributed under the same terms.
+- **fallout2-ce** is under the [Sustainable Use License](https://github.com/fallout2-ce/fallout2-ce/blob/main/LICENSE.md). The patch in `patches/` modifies it and is distributed under the same terms.
 - **OpenOrbis PS4 Toolchain** is GPL-3.0.
-- **zlib** (zlib license) and **fpattern** (see its repository) are used unmodified.
+- **zlib** (zlib license) is used unmodified; fpattern, lodepng and stb_vorbis come vendored in fallout2-ce under their own licenses.
 - Fallout 2 is © Bethesda Softworks / Interplay. This project contains no game assets and is not affiliated with them.

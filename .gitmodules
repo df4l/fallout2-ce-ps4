@@ -1,6 +1,6 @@
 [submodule "external/fallout2-ce"]
 	path = external/fallout2-ce
-	url = https://github.com/alexbatalov/fallout2-ce
+	url = https://github.com/fallout2-ce/fallout2-ce
 	ignore = dirty
 [submodule "external/PS4Toolchain"]
 	path = external/PS4Toolchain
@@ -9,6 +9,3 @@
 [submodule "external/zlib"]
 	path = external/zlib
 	url = https://github.com/madler/zlib
-[submodule "external/fpattern"]
-	path = external/fpattern
-	url = https://github.com/alexbatalov/fpattern
