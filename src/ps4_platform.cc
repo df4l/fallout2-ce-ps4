@@ -403,6 +403,13 @@ void ps4_abs_path(const char* in, char* out, size_t cap)
         // against the work dir) with "data\SAVEGAME\..." etc. (master_patches).
         // Fold the second form onto the first so both name the same files.
         const char* rel = in;
+        // Directory xbase "data" + an engine path that already starts with
+        // "data\" (fork's mapBuildDataSavePath) gives "data\data\...": drop
+        // the duplicate so .SAV maps land where "MAPS\*.SAV" finds them.
+        while (strncasecmp(rel, "data", 4) == 0 && (rel[4] == '\\' || rel[4] == '/')
+            && strncasecmp(rel + 5, "data", 4) == 0 && (rel[9] == '\\' || rel[9] == '/')) {
+            rel += 5;
+        }
         if (strncasecmp(rel, "data", 4) == 0 && (rel[4] == '\\' || rel[4] == '/')) {
             static const char* const kFolded[] = { "SAVEGAME", "MAPS", "proto" };
             const char* sub = rel + 5;
